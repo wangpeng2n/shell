@@ -1,0 +1,19 @@
+#!/usr/bin/expect 
+
+if  {$argc<2} {
+            puts stderr "Usage: $argv0 need argv. \nssh hostname password\nexample:ssh 192.168.1.180 123456\n"
+            exit 1
+}
+
+set password [lindex $argv 1]
+set ip [lindex $argv 0]
+set i 1
+
+spawn ssh-copy-id -i /root/.ssh/id_rsa.pub $ip
+expect {
+        "yes/no" {send "yes\r";exp_continue}
+        "*password:"{send "$password\r"}
+       }
+expect "*password:"
+send "$password\r"
+expect eof

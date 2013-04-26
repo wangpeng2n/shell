@@ -1,0 +1,558 @@
+#!/bin/bash 
+if [ -z $NODE_PREFIX ];then
+export NODE_PREFIX=node
+fi
+
+export OUTPUT=/tmp/setup_cluster.log
+
+if [ -z $IS_SUSE ];then
+if  cat /etc/issue|grep SUSE >> $OUTPUT ;then
+export IS_SUSE=1
+else
+export IS_SUSE=0
+fi
+fi
+
+if [ -z $HOSTSFILE ];then
+export HOSTSFILE=/etc/hosts
+fi
+
+
+if [ $IS_SUSE == 1 ];then
+export RCLOCAL=/etc/init.d/after.local
+else
+export RCLOCAL=/etc/rc.local
+fi
+
+if [ -z $REMOTE_SH ] ;then
+  if [ `whoami` == root ];then 
+  export REMOTE_SH=ssh
+  else
+  export REMOTE_SH=rsh
+  fi
+fi
+
+
+if [ $REMOTE_SH == rsh ];then
+export REMOTE_CP=rcp
+else
+export REMOTE_CP=scp
+fi
+
+if [ -z $NFSCONF ];then
+export NFSCONF=nfs.cfg
+fi
+ 
+
+
+waitfor()
+(
+putsout=$1
+count=$2
+second=$3
+echo ""
+echo $putsout
+for((i=$2;i>=1;i--));do
+echo -n "$i.. "; sleep $second
+done
+echo ""
+echo ""
+)
+
+uniqfile()
+(
+infile=`basename $1`
+tmpfile=/tmp/${infile}.tmp
+uniq $infile >$tmpfile;
+mv -f  $tmpfile $infile
+exit 0
+)
+uncommentfile()
+(
+awk '$1 !~ /^#/ ' $1
+exit 0
+)
+
+sync_file()
+(
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+for node in $nodelist;do
+echo "========$node========="
+for i in $*;do
+# if [ ${i:0:1} != / ];then
+#      echo "Error: you must enter a Absolute Path !!";exit -1
+# fi
+ baseDir=$(cd "$(dirname "$i")"; pwd)
+ if [ -f $i ];then	   
+ $REMOTE_CP -p $i $node:$baseDir >> $OUTPUT
+# echo "$REMOTE_CP -p $i $node:$baseDir"
+ elif [ -d $i ];then
+ $REMOTE_CP -rp $i $node:$baseDir >> $OUTPUT
+# echo "$REMOTE_CP -rp $i $node:$baseDir"
+ else
+ echo "Error:the file or path $i not exists!!!";exit -1
+ fi
+done
+done
+exit 0
+) 
+
+testIP()
+{
+waitfor "Now test the IP adress " 5 0.2
+IPList=`uncommentfile $HOSTSFILE|awk '{print $1}' `
+for ip in $IPList;do
+if ping -c 3 $ip;then
+echo -n ""
+else
+echo -n "Warning: Can not connect to IP Address: $ip, is Continue? [Continue(C)/End]: ";read IsContinue
+  if [ -z $IsContinue ] || [ $IsContinue == Continue ] || [ $IsContinue == C ];then
+  echo -n ""
+  else
+  exit -2
+  fi
+fi
+echo ""
+done
+}
+
+
+setup_ssh()
+(
+if [ $# -ne 1 ] ;then
+echo "usage: setup_ssh username"
+exit -1
+fi
+username=$1
+
+waitfor "Now set up the SSH for User:$username" 5 0.2
+
+if [ $username == root ] ; then
+IsSharedDirDeaf=n
+else
+IsSharedDirDeaf=y
+fi
+dir=`awk -F: -v name=$username '($1==name)  {print $6}' /etc/passwd`
+if [ -f $dir/.ssh/id_rsa.pub ];then
+echo -n ""
+else
+sudo -u $username ssh-keygen -t rsa
+fi
+cd $dir/.ssh
+cp -p id_rsa.pub authorized_keys
+echo "StrictHostKeyChecking no" >config; chown $username config
+echo -n "Is $dir Shared Path?[ $IsSharedDirDeaf ]: ";read IsSharedDir
+if [ -z $IsSharedDir ];then
+IsSharedDir=$IsSharedDirDeaf
+fi 
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+if [ $IsSharedDir == y ];then
+echo -n ""
+else
+ for node in $nodelist;do 
+ echo ========${node}=============
+ $REMOTE_CP  -rp $dir/.ssh $node:$dir/ >> $OUTPUT 
+ done
+fi
+)
+
+setup_rsh()
+{
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+waitfor "Now set up the RSH for All User" 5 0.2
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+uncommentfile $HOSTSFILE|awk '{print $2}'> /etc/hosts.equiv
+
+cp /etc/hosts.equiv /root/.rhosts
+if ! cat /etc/securetty |grep rsh >>$OUTPUT;then 
+echo rsh >> /etc/securetty
+fi
+if ! cat /etc/securetty |grep rlogin >>$OUTPUT;then 
+echo rlogin >> /etc/securetty
+fi
+if ! cat /etc/securetty |grep rexec >>$OUTPUT;then 
+echo rexec >> /etc/securetty
+fi
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+for node in $nodelist;do
+echo ======$node======
+scp /etc/securetty  $node:/etc  >>  $OUTPUT 
+scp  /etc/hosts.equiv  $node:/etc >> $OUTPUT 
+scp  /root/.rhosts     $node:/root >> $OUTPUT 
+ IsRshSever=`ssh $node "rpm -qa|grep rsh-server"`
+ if [ -z $IsRshSever ];then
+ echo "Error: You do not Install rsh server on $node, sleep 5 seconds"
+ sleep 5
+ fi
+ krbfiles=`ssh $node "ls /etc/profile.d/krb*sh"`
+ if [  $? == 0 ];then
+  for krbfile in $krbfiles;do
+   ssh $node mv -f $krbfile $krbfile.bak
+  done
+ fi
+ssh $node "chkconfig xinetd on;chkconfig rsh on;chkconfig rexec on;chkconfig rlogin on"
+ssh $node /etc/init.d/xinetd restart
+done
+}
+
+setup_service()
+(
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+waitfor "Now set up the Initial Serverce " 5 0.2
+
+if [ $IS_SUSE == 1 ];then
+echo "/sbin/chkconfig --level 35 nfsserver   on 
+/sbin/chkconfig --level 35 SuSEfirewall2_init  off
+/sbin/chkconfig --level 35 SuSEfirewall2_setup off
+">/tmp/setup_service.sh
+  if ! cat /etc/vimrc|grep backspace >>$OUTPUT;then
+  echo 'set backspace=indent,eol,start' >> /etc/vimrc
+  fi
+  sync_file /etc/vimrc
+else
+echo "/sbin/chkconfig --level 35 nfs   on 
+/sbin/chkconfig --level 35 iptables off
+/sbin/chkconfig --level 35 ip6tables off
+/sbin/chkconfig --level 35 sendmail off
+">/tmp/setup_service.sh
+sed -e s/=enable/=disable/g /etc/selinux/config|sed -e s/=enforcing/=disable/g >/tmp/selinux.config
+cp /tmp/selinux.config /etc/selinux/config 
+sync_file /etc/selinux/config 
+fi
+chmod +x /tmp/setup_service.sh
+sync_file /tmp/setup_service.sh
+sync_do /tmp/setup_service.sh    
+)
+
+setup_nfs()
+{
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+waitfor "Now set up the NFS Shared PATH " 5 0.5
+
+rm -f /tmp/exports.*
+rm -f /tmp/nfs.local.*
+
+IsIsNfsHost=n
+NfsHostList=(`uncommentfile $NFSCONF|awk '/NFSDIR/ {print $2}'`)
+NfsDirList=(`uncommentfile $NFSCONF|awk '/NFSDIR/ {print $3}' `)
+MountPointList=(`uncommentfile $NFSCONF|awk '/NFSDIR/ {print $4}'`)
+NfsDirNum=`uncommentfile $NFSCONF|awk '/NFSDIR/ {print $3}'|wc -l`
+if [ $NfsDirNum -ge 1 ];then
+IsNfsHost=y
+else
+exit -1
+fi
+echo "Confirm your $NFSCONF is right!! "
+uncommentfile $NFSCONF
+echo -n "Is Continue ? [y/n]";read IsConfirm
+  if [ -z $IsConfirm ];then
+  IsConfirm=y
+  fi
+  if [ $IsConfirm == n ];then
+      exit -1
+  fi
+
+for i in `seq 0 $(($NfsDirNum-1))`;do 
+NfsHost=${NfsHostList[$i]}
+NfsDir=${NfsDirList[$i]}
+MountPoint=${MountPointList[$i]}
+NfsHostSuf=`echo $NfsHost|grep -o "[1-9][^ ]*"` 
+echo $NfsHost $NfsDir $MountPoint
+echo "$NfsDir  *(rw,no_root_squash,async)" >>/tmp/exports.$NfsHostSuf
+$REMOTE_SH $NfsHost mkdir -p $NfsDir
+
+echo "Replace the File:/etc/exports located in $NfsHost!"; sleep 3
+$REMOTE_CP -p /tmp/exports.$NfsHostSuf  $NfsHost:/etc/exports >>$OUTPUT 
+  if [ $IS_SUSE == 1 ];then
+  $REMOTE_SH $NfsHost /etc/init.d/nfsserver restart;sleep 2
+  $REMOTE_SH $NfsHost /sbin/chkconfig --level 35 nfsserver on
+  else 
+  $REMOTE_SH $NfsHost /etc/init.d/nfs restart;sleep 2
+  $REMOTE_SH $NfsHost /sbin/chkconfig --level 35 nfs on
+  fi
+    nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+    for node in $nodelist; do 
+    NodeSuf=`echo $node|grep -o "[1-9][^ ]*"` 
+#   echo $NodeSuf $NfsHostSuf
+    if [ $NodeSuf -ne $NfsHostSuf ];then
+    $REMOTE_SH  $node mkdir -p $MountPoint
+    echo "mount -t nfs $NfsHost:$NfsDir $MountPoint" >>/tmp/nfs.local.$node 
+    fi
+    done  
+done
+
+
+BindedHome=`uncommentfile $NFSCONF|awk '/BINDHOME/ {print $2}'`
+if [ ! -z $BindedHome ];then
+     if [ $BindedHome != /home ];then
+    nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+    for node in $nodelist; do 
+    mkdir -p $BindedHome
+    echo "mount --bind $BindedHome /home" >>/tmp/nfs.local.$node 
+    done
+    fi
+fi
+
+for nfslo in `ls /tmp/nfs.local.*`;do
+node=`echo $nfslo|awk -F. '{print $3}'`
+echo $node
+echo $nfslo
+$REMOTE_CP  $nfslo ${node}:/etc/nfs.local >> $OUTPUT 
+   if ! $REMOTE_SH $node cat $RCLOCAL |grep /etc/nfs.local >>$OUTPUT;then 
+   $REMOTE_SH $node  "echo source /etc/nfs.local >>$RCLOCAL "
+   fi
+$REMOTE_SH  $node source /etc/nfs.local
+done
+
+
+}
+
+sync_user()
+(
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+waitfor "Now Synchronize user and group on the Whole cluster" 5 0.2
+if [ $IS_SUSE ];then
+sync_file /etc/passwd /etc/group /etc/shadow
+else
+sync_file /etc/passwd /etc/group /etc/shadow /etc/gshadow
+fi
+)
+
+adduser_cluster()
+{
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+username=$1
+if awk -F: '{print $1}' /etc/passwd|grep $username >>$OUTPUT;then
+echo "Error: user: $username has exist!! "
+exit 12
+fi
+waitfor "Now  add user: $usernmae on the Whole cluster" 5 0.2
+echo -n "Input the Home directory for user:$username[/public/home/${username}]: ";read HomePath
+  if [ -z $HomePath ];then
+  HomePath=/public/home/${username}
+  fi
+  if [ ${HomePath:0:1} != / ];then
+      echo "Error: you must enter a Absolute Path !!";exit -1
+  fi
+
+echo -n "Input the Group Name for user:$username[users]: ";read GroupName
+  if [ -z $GroupName ];then
+  GroupName=users
+  fi
+if [ $IS_SUSE ];then
+  useradd -m -d $HomePath -g $GroupName $username
+else
+  useradd -d $HomePath -g $GroupName $username
+fi
+passwd $username
+sync_user
+echo "adduser $username on the whole cluster successfully!"
+echo -n "Do you want setup SSH without passwd for user:$username[y]?";read IsSsh
+  if [ -z $IsSsh ];then
+  IsSsh=y
+  fi
+if [ $IsSsh == y ];then
+setup_ssh $username
+fi
+}
+
+deluser_cluster()
+(
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+username=$1
+if ! awk -F: '{print $1}' /etc/passwd|grep $username >>$OUTPUT;then
+echo "Error: user: $username has not existed!! "
+exit 12
+fi
+
+waitfor "Now  del user: $usernmae on the Whole cluster" 5 0.2
+userdel $username
+dir=`awk -F: -v name=$username '($1==name)  {print $6}' /etc/passwd`
+echo -n "Do you want to delete Home path: $dir for $username[n/y]: ";read IsDel
+  if [ -z $IsDel ];then
+  IsDel=n
+  fi
+  if [ $IsDel == y ];then
+  rm -rf $dir
+  fi
+sync_user
+echo "deluser $username on the whole cluster successfully!"
+)
+
+
+sync_do()
+(
+waitfor "Now excute the commands: $* on whole cluster" 5 0.2
+echo "Excuting Command $* On the whole Cluster"
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+for node in $nodelist;do
+echo ======$node====
+$REMOTE_SH $node $*
+done
+)
+sync_time()
+(
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+waitfor "Now Synchronize time on the Whole cluster" 5 0.2
+
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+time=`date`
+for node in $nodelist;do
+$REMOTE_SH $node "date -s \"$time"\" &
+done
+echo ""
+if [ $IS_SUSE == 0 ];then
+for node in $nodelist;do
+$REMOTE_SH $node clock -w
+done
+fi
+
+)
+disp_cpu()
+(
+nodelist=`uncommentfile $HOSTSFILE|awk '{print $2}'|sed -n "/^${NODE_PREFIX}/p"`
+for node in $nodelist;do
+echo "========$node========="
+$REMOTE_SH $node ps -ef |gawk -v per='%' '{if($4<100&&$4>5) printf("%8s %4s%s %13s %s\n", $1,$4,per,$7,$8)}'
+done
+)
+
+setup_cluster()
+{
+if [ `whoami` != root ];then
+echo "Error: You must log as root"
+exit -10
+fi
+
+testIP
+setup_ssh root
+waitfor "Now Synchronize file /etc/hosts on the whole cluster" 5 0.2
+sync_file /etc/hosts
+setup_rsh
+setup_service
+setup_nfs
+sync_user
+sync_time
+sync_do "hostname;date;df -a"
+}
+Usage()
+(
+echo "
+setup_cluster    Setting up the Parallel Environment for a Computer Cluster     
+Usage:
+-h --help          print the help                
+--testip           
+ Testing IP Address According to /etc/hosts
+--ssh username    
+ Setting up SSh without passwd for User: username  On the whole cluster
+--rsh (root only)             
+ Setting up RSH without passwd on the whole Cluster
+--service  (root only)        
+ Setting up service on the whole Cluster 
+--nfs  (root only)            
+ Setting up NFS Shared File System on the whole Cluster
+--sync_user (root only)       
+ Synchronize users and groups on the whole Cluster
+--adduser username (root only)
+  Add a user:username on the whole Cluster
+--deluser username (root only)
+  Del a user:username on the whole Cluster 
+--sync_time (root only)       
+ Synchronize time and date on the whole Cluster
+--sync_file filename  
+ Synchronize file: filename on the whole Cluster
+--sync_do  command  
+ Execute command on the whole Cluster
+--disp_cpu
+ Display cpu utilized         
+--all (root only)             
+Setting up for a Computer Cluster according to the following sequence.
+1) --testip
+2) --ssh root
+3) --sync_file /etc/hosts 
+4) --rsh
+5) --service
+6) --nfs
+7) --sync_user
+8) --sync_time
+9) --sync_do 'hostname;date;df -a' (verify the setting) 
+                   
+Version: 1.2.3
+Author: Shaojie Ma, Technical Support Department Chief Engineer
+                    Dawning Information Industry Co., LTD.
+                    Email: mashj@dawning.com.cn 
+                          "
+exit -1
+                         
+)
+
+
+if [ $# == 0 ];then
+echo "try setup_cluster -h  "
+elif [ $# == 1 ];then
+ case $1 in
+ -h|--help|-help)
+    Usage;;
+ --all)
+    setup_cluster;;
+ --testip)
+    testIP;;
+ --rsh)
+    setup_rsh;;
+ --service)
+    setup_service;;
+ --nfs)
+    setup_nfs;;
+ --sync_user)
+    sync_user;;
+ --sync_time)
+    sync_time;;
+ --disp_cpu)
+    disp_cpu;;
+ *)
+   echo "try setup_cluster -h  ";;
+ esac
+elif [ $# == 2 ] && [ $1 == --ssh ];then
+    setup_ssh $2
+elif [ $# == 2 ] && [ $1 == --adduser ];then
+    adduser_cluster $2
+elif [ $# == 2 ] && [ $1 == --deluser ];then
+    deluser_cluster $2
+else
+    if [ $1 == --sync_do ];then
+    command=`echo $*|awk '{for(i=2;i<=NF;i++) printf("%s ",$i)}'`
+    sync_do $command
+    elif [ $1 == --sync_file ];then
+    files=`echo $*|awk '{for(i=2;i<=NF;i++) printf("%s ",$i)}'`
+    sync_file $files
+    else
+    echo "try setup_cluster -h "
+    fi
+fi 
+

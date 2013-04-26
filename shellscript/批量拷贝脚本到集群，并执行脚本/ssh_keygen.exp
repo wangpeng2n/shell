@@ -1,0 +1,15 @@
+#!/usr/bin/expect
+spawn rm -rvf /root/.ssh/
+
+spawn ssh-keygen -t rsa
+set timeout 2
+expect "Enter file in which to save the key (/root/.ssh/id_rsa):"
+send "\r"
+set timeout 2
+expect "Enter passphrase (empty for no passphrase):"
+send "\r"
+set timeout 2
+expect "Enter same passphrase again:"
+send "\r"
+set timeout 2
+expect eof

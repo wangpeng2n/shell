@@ -1,0 +1,7 @@
+initstorefs-devel-3.3.1-1.el6.x86_64
+initstorefs-geo-replication-3.3.1-1.el6.x86_64
+initstorefs-server-3.3.1-1.el6.x86_64
+initstorefs-rdma-3.3.1-1.el6.x86_64
+initstorefs-debuginfo-3.3.1-1.el6.x86_64
+initstorefs-fuse-3.3.1-1.el6.x86_64
+initstorefs-3.3.1-1.el6.x86_64

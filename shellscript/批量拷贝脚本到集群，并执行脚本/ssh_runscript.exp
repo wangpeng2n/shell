@@ -1,0 +1,15 @@
+#!/usr/bin/expect 
+set ip [lindex $argv 0]
+set file [lindex $argv 1]
+set directory [lindex $argv 2]
+send_tty "$ip"
+send_tty "$file"
+send_tty "$directory"
+spawn ssh $ip
+expect "*# "
+send "cd $directory\r"
+expect "*# "
+send "./$file\r"
+expect "*# "
+send "exit\r"
+expect eof

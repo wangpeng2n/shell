@@ -1,0 +1,4 @@
+ps -ef | grep initstored 查看initstored 进程
+
+d3000的服务initstored
+触摸屏后台抓取信息的服务data_traind
